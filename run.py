@@ -1,5 +1,5 @@
-from controller import Controller
+from server import WebSocketServer
 
 
-ctr = Controller()
-ctr.run()
+server = WebSocketServer()
+server.run("localhost", 8080)

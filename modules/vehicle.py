@@ -3,7 +3,7 @@ from listener import Listener
 
 
 class VehicleModule(Module):
-    EVENTS = ("move",)
+    NAME = "vehicle"
 
     async def is_active(self):
         # Check if motors are connected

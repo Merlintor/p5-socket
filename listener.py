@@ -7,8 +7,8 @@ class Listener:
         self.callback = callback
         self.onetime = onetime
 
-    def run(self, payload, loop=None):
-        res = self.callback(payload)
+    def run(self, *args, loop=None, **kwargs):
+        res = self.callback(*args, **kwargs)
         if inspect.isawaitable(res):
             loop = loop or asyncio.get_event_loop()
             return loop.create_task(res)

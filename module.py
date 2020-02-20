@@ -2,7 +2,7 @@ from listener import Listener
 
 
 class Module:
-    EVENTS = ()
+    NAME = ""
 
     def __init__(self, controller):
         self.controller = controller
@@ -27,9 +27,6 @@ class Module:
         return True
 
     async def load(self):
-        for event in self.EVENTS:
-            self.controller.register_event(event)
-
         for event, listener in self.listeners:
             self.controller.add_listener(event, listener)
 
@@ -40,9 +37,6 @@ class Module:
         pass
 
     async def unload(self):
-        for event in self.EVENTS:
-            self.controller.unregister_event(event)
-
         for event, listener in self.listeners:
             self.controller.remove_listener(event, listener)
 

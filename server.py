@@ -1,133 +1,17 @@
 import asyncio
 import websockets
-import time
-import json
-import traceback
-import math
 
-
-class Opcodes:
-    DISPATCH = 0  # Dispatch Event
-    HELLO = 1  # Send to the client immediately after the connection was established
-    EVENTS_UPDATE = 2  # The client updates which events it wants to receive or server updates which events are available
-    HEARTBEAT = 10  # Client or Server requests a heartbeat_ack from the other party
-    HEARTBEAT_ACK = 11  # Client or Server acknowledges a heartbeat by the other party
-
-
-class WebSocketConnection(websockets.WebSocketServerProtocol):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.server = None  # Filled by handle_connection
-        self.subscriptions = []
-        self.hb_interval = 10
-        self.latency = math.inf  # Difference between the last sent heartbeat and received ack
-        self._ack = self.loop.create_future()
-
-    async def send_json(self, data):
-        await self.send(json.dumps(data))
-
-    def send_op(self, op, **kwargs):
-        return self.send_json({
-            "op": op,
-            **kwargs
-        })
-
-    async def heartbeat(self):
-        """
-        Send a heartbeat and wait for the heartbeat_ack
-        """
-        self._ack = self.loop.create_future()
-        await self.send_op(Opcodes.HEARTBEAT)
-        await asyncio.wait_for(self._ack, timeout=self.hb_interval)
-
-    async def heartbeat_ack(self):
-        """
-        Acknowledge a received heartbeat
-        """
-        await self.send_op(Opcodes.HEARTBEAT_ACK)
-
-    async def events_update(self):
-        """
-        Called by the server when the available events update
-        """
-        await self.send_op(Opcodes.EVENTS_UPDATE, d=self.server.events)
-
-    async def message_received(self, msg):
-        """
-        Parse message data and respond if necessary
-        Dispatch messages are dispatched back to the websocket server
-        """
-        msg = json.loads(msg)
-        op = msg.get("op")
-        data = msg.get("d")
-
-        if op != Opcodes.DISPATCH:
-            if op == Opcodes.HEARTBEAT:
-                # Client requests a heartbeat_ack
-                await self.heartbeat_ack()
-
-            elif op == Opcodes.HEARTBEAT_ACK:
-                # Client acknowledges a received heartbeat
-                if not self._ack.done():
-                    self._ack.set_result(None)
-
-            elif op == Opcodes.EVENTS_UPDATE:
-                # Client updates which events it wants to receive
-                if not isinstance(data, list):
-                    return
-
-                for sub in data:
-                    if sub in self.server.events:
-                        self.subscriptions.append(sub)
-
-            return
-
-        # It's a dispatch message (event)
-        event = data.get("t")
-        payload = data.get("p")
-        self.server._dispatch_received(event, payload)
-
-    async def poll(self):
-        """
-        Poll one message and call message_receivedx
-        """
-        msg = await self.recv()
-        await self.message_received(msg)
-
-    async def start_polling(self):
-        """
-        Poll messages "forever"
-        """
-        while True:
-            await self.poll()
-
-    async def start_heartbeat(self):
-        """
-        Send a heartbeat every self.hb_interval seconds and wait for heartbeat_ack
-        Otherwise close the connection
-        """
-        await asyncio.sleep(self.hb_interval)
-        while True:
-            sent = time.perf_counter()
-            try:
-                await self.heartbeat()
-            except asyncio.TimeoutError:
-                await self.close()
-                return
-
-            except websockets.ConnectionClosed:
-                return
-
-            self.latency = latency = time.perf_counter() - sent
-            await asyncio.sleep(self.hb_interval - latency)
+from modules import to_load
+from protocol import WebSocketConnection, Opcodes
 
 
 class WebSocketServer:
     def __init__(self, loop=None):
         self.loop = loop or asyncio.get_event_loop()
         self.connections = []
-        self.events = set()
         self.listeners = {}
+
+        self.modules = [m(self) for m in to_load]
 
     async def handle_connection(self, ws, path):
         """
@@ -138,33 +22,17 @@ class WebSocketServer:
         ws.server = self
         try:
             await ws.send_op(Opcodes.HELLO, d={
-                "events": list(self.events)
+                "modules": [m.NAME for m in self.loaded_modules]
                 # Current State etc.
             })
             self.loop.create_task(ws.start_heartbeat())
+            self._dispatch_received("client_connect", ws)
             await ws.start_polling()
         except websockets.ConnectionClosed:
             pass
         finally:
             self.connections.remove(ws)
-
-    def register_event(self, event):
-        """
-        Add event to the available event list and update clients if necessary
-        """
-        if event not in self.events:
-            self.events.add(event)
-            for ws in self.connections:
-                self.loop.create_task(ws.events_update())
-
-    def unregister_event(self, event):
-        """
-        Remove event from the available event list and update clients if necessary
-        """
-        if event in self.events:
-            self.events.remove(event)
-            for ws in self.connections:
-                self.loop.create_task(ws.events_update())
+            self._dispatch_received("client_disconnect", ws)
 
     def add_listener(self, event, listener):
         """
@@ -196,15 +64,9 @@ class WebSocketServer:
         Dispatch an event to all websocket connections
         """
         for ws in self.connections:
-            self.loop.create_task(ws.send_op(
-                Opcodes.DISPATCH,
-                d={
-                    "t": event,
-                    "p": payload
-                }
-            ))
+            self.loop.create_task(ws.dispatch(event, payload))
 
-    def _dispatch_received(self, event, payload):
+    def _dispatch_received(self, event, *args, **kwargs):
         """
         Called by the individual websocket connections for received dispatch messages
         """
@@ -215,7 +77,7 @@ class WebSocketServer:
                 to_remove.append(i)
 
             try:
-                listener.run(payload, loop=self.loop)
+                listener.run(*args, **kwargs, loop=self.loop)
             except:
                 traceback.print_exc()
 
@@ -223,9 +85,44 @@ class WebSocketServer:
         for i in sorted(to_remove, reverse=True):
             to_remove.pop(i)
 
-    async def serve(self, *args, **kwargs):
+    @property
+    def loaded_modules(self):
+        for module in self.modules:
+            if module.loaded:
+                yield module
+
+    async def update_modules(self):
+        update = False
+        for module in self.modules:
+            if await module.is_active():
+                if not module.loaded:
+                    update = True
+                    await module.load()
+
+            elif module.loaded:
+                update = True
+                await module.unload()
+
+        if update:
+            for ws in self.connections:
+                await ws.send_op(Opcodes.HELLO, d={
+                    "modules": [m.NAME for m in self.loaded_modules]
+                    # Current State etc.
+                })
+
+    async def _update_loop(self):
+        while True:
+            await asyncio.sleep(5)
+            await self.update_modules()
+
+    async def start(self, *args, **kwargs):
         """
         Start serving
         Non blocking
         """
+        self.loop.create_task(self._update_loop())
         return await websockets.serve(self.handle_connection, klass=WebSocketConnection, *args, **kwargs)
+
+    def run(self, *args, **kwargs):
+        self.loop.create_task(self.start(*args, **kwargs))
+        self.loop.run_forever()
