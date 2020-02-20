@@ -4,21 +4,20 @@ from listener import Listener
 class Module:
     NAME = ""
 
-    def __init__(self, controller):
-        self.controller = controller
-        self.loop = controller.loop
+    def __init__(self, server):
+        self.server = server
+        self.loop = server.loop
         self.loaded = False
+
+        self.listeners = [
+            (name[3:], Listener(getattr(self, name)))
+            for name in dir(self)
+            if name.startswith("on_")
+        ]
 
     @staticmethod
     def listener(callback):
         return Listener(callback)
-
-    @property
-    def listeners(self):
-        for name in dir(self):
-            attr = getattr(self, name)
-            if name.startswith("on_"):
-                yield name.replace("on_", ""), Listener(attr)
 
     async def is_active(self):
         """
@@ -28,7 +27,7 @@ class Module:
 
     async def load(self):
         for event, listener in self.listeners:
-            self.controller.add_listener(event, listener)
+            self.server.add_listener(event, listener)
 
         self.loaded = True
         await self._post_load()
@@ -38,7 +37,7 @@ class Module:
 
     async def unload(self):
         for event, listener in self.listeners:
-            self.controller.remove_listener(event, listener)
+            self.server.remove_listener(event, listener)
 
         self.loaded = False
         await self._post_unload()
