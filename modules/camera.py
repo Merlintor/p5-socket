@@ -1,5 +1,6 @@
 from module import Module
 from aiohttp import web
+import random
 
 
 class CameraModule(Module):
@@ -12,14 +13,14 @@ class CameraModule(Module):
         self._port = kwargs.pop("port", 0)
 
     async def is_active(self):
-        return True
+        return random.randint(0, 100) < 80
 
     async def _post_load(self):
         await self._runner.setup()
         site = web.TCPSite(self._runner, '0.0.0.0', self._port)
         await site.start()
         self._port = site._server.sockets[0].getsockname()[1]
-        self.controller.dispatch("cam_available", {"port": self._port})
+        self.server.dispatch("cam_available", {"port": self._port})
 
     async def _post_unload(self):
         await self._runner.cleanup()
@@ -30,5 +31,5 @@ class CameraModule(Module):
     async def on_cam_request(self, client):
         await client.dispatch("cam_available", {"port": self._port})
 
-    async def on_cam_move(self):
-        pass
+    async def on_cam_move(self, _, degrees):
+        print("cam move", degrees)

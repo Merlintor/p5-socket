@@ -1,5 +1,6 @@
 import asyncio
 import websockets
+import traceback
 
 from modules import to_load
 from protocol import WebSocketConnection, Opcodes

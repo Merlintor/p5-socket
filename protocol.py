@@ -2,12 +2,13 @@ import asyncio
 import websockets
 import json
 import math
+import time
 
 
 class Opcodes:
     DISPATCH = 0  # Dispatch Event
     HELLO = 1  # Send to the client immediately after the connection was established
-    MODULES_UPDATE = 2  # Server updates which events are available
+    MODULES_UPDATE = 2  # Server updates which modules are available
     HEARTBEAT = 10  # Client or Server requests a heartbeat_ack from the other party
     HEARTBEAT_ACK = 11  # Client or Server acknowledges a heartbeat by the other party
 
