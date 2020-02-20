@@ -177,6 +177,20 @@ class WebSocketServer:
         else:
             self.listeners[event].append(listener)
 
+    def remove_listener(self, event, listener):
+        """
+        Remove a previously added listener
+        """
+        if event not in self.listeners.keys():
+            return False
+
+        try:
+            self.listeners[event].remove(listener)
+            return True
+
+        except ValueError:
+            return False
+
     def dispatch(self, event, payload):
         """
         Dispatch an event to all websocket connections
@@ -194,7 +208,6 @@ class WebSocketServer:
         """
         Called by the individual websocket connections for received dispatch messages
         """
-        print(event, payload)
         listeners = self.listeners.get(event, [])
         to_remove = []
         for i, listener in enumerate(listeners):
@@ -211,14 +224,8 @@ class WebSocketServer:
             to_remove.pop(i)
 
     async def serve(self, *args, **kwargs):
-        return await websockets.serve(self.handle_connection, *args, **kwargs)
-
-    def run(self, *args, **kwargs):
-        self.loop.create_task(self.serve(*args, klass=WebSocketConnection, **kwargs))
-        self.loop.run_forever()
-
-
-if __name__ == "__main__":
-    server = WebSocketServer()
-    server.register_event("map")
-    server.run("localhost", 80)
+        """
+        Start serving
+        Non blocking
+        """
+        return await websockets.serve(self.handle_connection, klass=WebSocketConnection, *args, **kwargs)
