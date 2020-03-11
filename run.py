@@ -2,4 +2,4 @@ from server import WebSocketServer
 
 
 server = WebSocketServer()
-server.run("localhost", 8080)
+server.run("localhost", 420)
