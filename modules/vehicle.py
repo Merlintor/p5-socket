@@ -10,6 +10,6 @@ class VehicleModule(Module):
         # Not implementable without knowing about the specifications of the motors
         return await self.loop.run_in_executor(None, lambda: True)
 
-    async def on_move(self, data):
+    async def on_move(self, ws, data):
         # Control motors
         print("now move", data)
