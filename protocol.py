@@ -64,7 +64,6 @@ class WebSocketConnection(websockets.WebSocketServerProtocol):
         Parse message data and respond if necessary
         Dispatch messages are dispatched back to the websocket server
         """
-        print(msg)
         msg = json.loads(msg)
         op = msg.get("op")
         data = msg.get("d")
