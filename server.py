@@ -106,7 +106,7 @@ class WebSocketServer:
 
         if update:
             for ws in self.connections:
-                await ws.send_op(Opcodes.HELLO, d={
+                await ws.send_op(Opcodes.MODULES_UPDATE, d={
                     "modules": [m.NAME for m in self.loaded_modules]
                     # Current State etc.
                 })
