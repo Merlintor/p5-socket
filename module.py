@@ -31,12 +31,13 @@ class Module:
 
     def __init__(self, server):
         self.server = server
-        self.loaded = False
 
         self.listeners = []
         self.http_routes = []
 
         self._discover_handlers()
+
+        self.state = {}
 
     @property
     def loop(self):
@@ -78,5 +79,15 @@ class Module:
                     handler=_function_to_method(value.handler)
                 ))
 
-    async def setup(self):
-        pass
+    async def state_update(self, new_state=None):
+        if new_state:
+            self._state.update(new_state)
+
+        await self.server.spread_event(self.NAME, self._state)
+
+    @listener("connect")
+    async def _provide_state(self, ws):
+        """
+        Provide new clients with the current module state
+        """
+        await ws.send_event(self.NAME, self._state)
