@@ -33,8 +33,8 @@ class CameraModule(Module):
     @listener("cam_move")
     async def on_cam_move(self, ws, payload):
         try:
-            new_xrot = int(payload.get("xrot"))
-            new_yrot = int(payload.get("yrot"))
+            new_xrot = int(payload["xrot"])
+            new_yrot = int(payload["yrot"])
 
             await self.state_update({
                 "xrot": new_xrot,
@@ -73,6 +73,8 @@ class CameraModule(Module):
 
                 await response.drain()
 
-                # Wait a bit to reach 30 fps (too many frames can cause performance issues)
+                # Wait a bit to reach 30 fps (too many frames can cause performance issues on both sides)
                 time_dif = time.perf_counter() - time_before
                 await asyncio.sleep((1 / self._goal_fps) - time_dif)
+
+        return response

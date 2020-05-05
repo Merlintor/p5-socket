@@ -81,13 +81,13 @@ class Module:
 
     async def state_update(self, new_state=None):
         if new_state:
-            self._state.update(new_state)
+            self.state.update(new_state)
 
-        await self.server.spread_event(self.NAME, self._state)
+        await self.server.spread_event(self.NAME, self.state)
 
     @listener("connect")
     async def _provide_state(self, ws):
         """
         Provide new clients with the current module state
         """
-        await ws.send_event(self.NAME, self._state)
+        await ws.send_event(self.NAME, self.state)
