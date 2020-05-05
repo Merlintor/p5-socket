@@ -1,11 +1,8 @@
 from module import Module, listener, http_route
-from aiohttp import web
-import random
-
-
-class MJPEGResponse(web.StreamResponse):
-    async def write_jpeg(self, jpeg):
-        pass
+from aiohttp import web, MultipartWriter
+import asyncio
+import time
+from uuid import uuid4
 
 
 class CameraModule(Module):
@@ -13,15 +10,13 @@ class CameraModule(Module):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.state = {
+            "available": True,
+            "xrot": 0,
+            "yrot": 0
+        }
 
-    async def http_stream(self, request):
-        stream = MJPEGResponse()
-        await stream.prepare(request)
-        while self.loaded:
-            await stream.write_jpeg(None)
-
-        await stream.write_eof()
-        return stream
+        self.goal_fps = 30
 
     @listener("connect")
     async def on_connect(self, ws):
@@ -33,4 +28,30 @@ class CameraModule(Module):
 
     @http_route()
     async def handle_stream(self, request):
-        return web.Response(text="This is a stream!")
+        frames = (
+            open("sample.jpeg", "rb").read(),
+            open("sample2.jpeg", "rb").read()
+        )
+
+        boundary = str(uuid4())
+        response = web.StreamResponse(
+            status=200,
+            reason='OK',
+            headers={
+                'Content-Type': 'multipart/x-mixed-replace;boundary={}'.format(boundary)
+            }
+        )
+        await response.prepare(request)
+
+        while True:
+            for frame in frames:
+                time_before = time.perf_counter()
+
+                with MultipartWriter('image/jpeg', boundary=boundary) as mpwriter:
+                    mpwriter.append(frame, {'Content-Type': 'image/jpeg'})
+                    await mpwriter.write(response, close_boundary=False)
+
+                await response.drain()
+
+                time_dif = time.perf_counter() - time_before
+                await asyncio.sleep((1 / self.goal_fps) - time_dif)
