@@ -1,4 +1,29 @@
-from listener import Listener
+from aiohttp import web
+
+
+class Listener:
+    def __init__(self, event, handler):
+        self.event = event
+        self.handler = handler
+
+
+class listener:
+    def __init__(self, event):
+        self.event = event
+
+    def __call__(self, handler):
+        self.handler = handler
+        return self
+
+
+class http_route:
+    def __init__(self, method="GET", path=""):
+        self.method = method
+        self.path = path
+
+    def __call__(self, handler):
+        self.handler = handler
+        return self
 
 
 class Module:
@@ -6,41 +31,52 @@ class Module:
 
     def __init__(self, server):
         self.server = server
-        self.loop = server.loop
         self.loaded = False
 
-        self.listeners = [
-            (name[3:], Listener(getattr(self, name)))
-            for name in dir(self)
-            if name.startswith("on_")
-        ]
+        self.listeners = []
+        self.http_routes = []
 
-    @staticmethod
-    def listener(callback):
-        return Listener(callback)
+        self._discover_handlers()
 
-    async def is_active(self):
+    @property
+    def loop(self):
+        return self.server.loop
+
+    def _discover_handlers(self):
         """
-        Checks with the state if the module should be loaded
+        Looks for module attributes that server as a listener or http_route
+        The listener and http_route decorators are used for type checking
         """
-        return True
+        def _function_to_method(fun):
+            """
+            Wraps a function as a method of this module and adds the self parameter
+            """
+            def _wrapper(*args, **kwargs):
+                return fun(self, *args, **kwargs)
 
-    async def load(self):
-        for event, listener in self.listeners:
-            self.server.add_listener(event, listener)
+            return _wrapper
 
-        self.loaded = True
-        await self._post_load()
+        for name in dir(self):
+            value = getattr(self, name)
+            if isinstance(value, listener):
+                self.listeners.append(Listener(
+                    event=value.event,
+                    handler=_function_to_method(value.handler)
+                ))
 
-    async def _post_load(self):
-        pass
+            elif isinstance(value, http_route):
+                # Prefix path with module name
+                if value.path:
+                    path = "/" + self.NAME + "/" + value.path.strip("/")
 
-    async def unload(self):
-        for event, listener in self.listeners:
-            self.server.remove_listener(event, listener)
+                else:
+                    path = "/" + self.NAME
 
-        self.loaded = False
-        await self._post_unload()
+                self.http_routes.append(web.route(
+                    method=value.method,
+                    path=path,
+                    handler=_function_to_method(value.handler)
+                ))
 
-    async def _post_unload(self):
+    async def setup(self):
         pass

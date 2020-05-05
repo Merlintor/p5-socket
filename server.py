@@ -1,129 +1,86 @@
+from aiohttp import web
+import aiohttp
 import asyncio
-import websockets
-import traceback
+import weakref
 
-from modules import to_load
-from protocol import WebSocketConnection, Opcodes
+from protocol import WebSocketConnection
+import modules
 
 
-class WebSocketServer:
-    def __init__(self, loop=None):
-        self.loop = loop or asyncio.get_event_loop()
-        self.connections = []
-        self.listeners = {}
+class Server(web.Application):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._loop = kwargs.get("loop")
 
-        self.modules = [m(self) for m in to_load]
+        self.clients = weakref.WeakSet()
 
-    async def handle_connection(self, ws, path):
-        """
-        Called for each incoming connection request
-        Connection gets closed automatically when this returns
-        """
-        self.connections.append(ws)
-        ws.server = self
-        try:
-            await ws.send_op(Opcodes.HELLO, d={
-                "modules": [m.NAME for m in self.loaded_modules]
-                # Current State etc.
-            })
-            self.loop.create_task(ws.start_heartbeat())
-            self._dispatch_received("client_connect", ws)
-            await ws.start_polling()
-        except websockets.ConnectionClosed:
-            pass
-        finally:
-            self.connections.remove(ws)
-            self._dispatch_received("client_disconnect", ws)
+        self.on_shutdown.append(self._on_shutdown)
+        self.add_routes([web.get("/ws", self._handle_websocket)])
 
-    def add_listener(self, event, listener):
-        """
-        Add a listener for a specific event
-        It can either be a static or onetime listener
-        """
-        if event not in self.listeners.keys():
-            self.listeners[event] = [listener]
-
-        else:
-            self.listeners[event].append(listener)
-
-    def remove_listener(self, event, listener):
-        """
-        Remove a previously added listener
-        """
-        if event not in self.listeners.keys():
-            return False
-
-        try:
-            self.listeners[event].remove(listener)
-            return True
-
-        except ValueError:
-            return False
-
-    def dispatch(self, event, payload):
-        """
-        Dispatch an event to all websocket connections
-        """
-        for ws in self.connections:
-            self.loop.create_task(ws.dispatch(event, payload))
-
-    def _dispatch_received(self, event, *args, **kwargs):
-        """
-        Called by the individual websocket connections for received dispatch messages
-        """
-        listeners = self.listeners.get(event, [])
-        to_remove = []
-        for i, listener in enumerate(listeners):
-            if listener.onetime:
-                to_remove.append(i)
-
-            try:
-                listener.run(*args, **kwargs, loop=self.loop)
-            except:
-                traceback.print_exc()
-
-        # Remove onetime listerners starting from the highest index
-        for i in sorted(to_remove, reverse=True):
-            to_remove.pop(i)
+        self._listeners = set()
 
     @property
-    def loaded_modules(self):
-        for module in self.modules:
-            if module.loaded:
-                yield module
+    def loop(self):
+        return self._loop or asyncio.get_event_loop()
 
-    async def update_modules(self):
-        update = False
-        for module in self.modules:
-            if await module.is_active():
-                if not module.loaded:
-                    update = True
-                    await module.load()
+    def load_module(self, module):
+        md = module(self)
+        for listener in md.listeners:
+            self._listeners.add(listener)
 
-            elif module.loaded:
-                update = True
-                await module.unload()
+        self.add_routes(md.http_routes)
 
-        if update:
-            for ws in self.connections:
-                await ws.send_op(Opcodes.MODULES_UPDATE, d={
-                    "modules": [m.NAME for m in self.loaded_modules]
-                    # Current State etc.
-                })
-
-    async def _update_loop(self):
-        while True:
-            await asyncio.sleep(5)
-            await self.update_modules()
-
-    async def start(self, *args, **kwargs):
+    def spread_event(self, event, payload):
         """
-        Start serving
-        Non blocking
+        Sends an event to load connected clients
         """
-        self.loop.create_task(self._update_loop())
-        return await websockets.serve(self.handle_connection, klass=WebSocketConnection, *args, **kwargs)
+        tasks = [
+            self.loop.create_task(ws.send_event(event, payload))
+            for ws in self.clients
+        ]
+        return asyncio.wait(tasks)
+
+    def dispatch_event(self, event, ws, *args, **kwargs):
+        """
+        Propagates an event to all internal listeners
+        """
+        for listener in self._listeners:
+            if event == listener.event:
+                self.loop.create_task(listener.handler(ws, *args, **kwargs))
+
+    async def _handle_websocket(self, request):
+        """
+        Handler for GET /ws
+        Creates and handles a websocket connection
+        """
+        ws = WebSocketConnection(self)
+        await ws.prepare(request)
+
+        self.clients.add(ws)
+        self.dispatch_event("connect", ws)
+        try:
+            self.loop.create_task(ws.start_heartbeat())
+            await ws.start_polling()
+
+        finally:
+            self.dispatch_event("disconnect", ws)
+            self.clients.discard(ws)
+
+    async def _on_shutdown(self, _):
+        """
+        Called when the server shutdowns
+        Gracefully closes all websocket connections
+        """
+        for ws in set(self.clients):
+            await ws.close(code=aiohttp.WSCloseCode.GOING_AWAY)
 
     def run(self, *args, **kwargs):
-        self.loop.create_task(self.start(*args, **kwargs))
-        self.loop.run_forever()
+        web.run_app(self, *args, **kwargs)
+
+
+if __name__ == "__main__":
+    server = Server()
+    for module in modules.to_load:
+        server.load_module(module)
+
+    server.run(host="0.0.0.0", port=420)

@@ -1,127 +1,123 @@
-import asyncio
-import websockets
+from aiohttp import web
+import aiohttp
 import json
-import math
+import asyncio
 import time
 
 
 class Opcodes:
     DISPATCH = 0  # Dispatch Event
-    HELLO = 1  # Send to the client immediately after the connection was established
-    MODULES_UPDATE = 2  # Server updates which modules are available
+    STATE_UPDATE = 1  # Send to the client immediately after the connection was established
     HEARTBEAT = 10  # Client or Server requests a heartbeat_ack from the other party
     HEARTBEAT_ACK = 11  # Client or Server acknowledges a heartbeat by the other party
 
 
-class WebSocketConnection(websockets.WebSocketServerProtocol):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.server = None  # Filled by handle_connection
-        self.hb_interval = 10
-        self.latency = math.inf  # Difference between the last sent heartbeat and received ack
-        self._ack = self.loop.create_future()
+class WebSocketConnection(web.WebSocketResponse):
+    def __init__(self, server, *args, **kwargs):
+        self.server = server
+        super().__init__(
+            protocols=("columbus",),
+            *args,
+            **kwargs
+        )
 
-    async def send_json(self, data):
-        await self.send(json.dumps(data))
+        self.latency = -1
+        self._hb_interval = 10
+        self._hb_ack = self.loop.create_future()
 
-    def send_op(self, op, **kwargs):
+    @property
+    def loop(self):
+        return self.server.loop
+
+    def send_op(self, op, data=None):
         return self.send_json({
             "op": op,
-            **kwargs
+            "d": data or {}
         })
 
-    async def dispatch(self, event, payload):
-        await self.send_op(
-            Opcodes.DISPATCH,
-            d={
-                "t": event,
-                "p": payload
-            }
-        )
+    def send_event(self, event, payload):
+        return self.send_op(Opcodes.DISPATCH, {
+            "t": event.lower(),
+            "p": payload
+        })
 
     async def heartbeat(self):
         """
         Send a heartbeat and wait for the heartbeat_ack
         """
-        self._ack = self.loop.create_future()
+        self._hb_ack = self.loop.create_future()
         await self.send_op(Opcodes.HEARTBEAT)
-        await asyncio.wait_for(self._ack, timeout=self.hb_interval)
-
-    async def heartbeat_ack(self):
-        """
-        Acknowledge a received heartbeat
-        """
-        await self.send_op(Opcodes.HEARTBEAT_ACK)
-
-    async def events_update(self):
-        """
-        Called by the server when the available events update
-        """
-        await self.send_op(Opcodes.EVENTS_UPDATE, d=self.server.events)
-
-    async def message_received(self, msg):
-        """
-        Parse message data and respond if necessary
-        Dispatch messages are dispatched back to the websocket server
-        """
-        msg = json.loads(msg)
-        op = msg.get("op")
-        data = msg.get("d")
-
-        if op != Opcodes.DISPATCH:
-            if op == Opcodes.HEARTBEAT:
-                # Client requests a heartbeat_ack
-                await self.heartbeat_ack()
-
-            elif op == Opcodes.HEARTBEAT_ACK:
-                # Client acknowledges a received heartbeat
-                if not self._ack.done():
-                    self._ack.set_result(None)
-
-            return
-
-        # It's a dispatch message (event)
-        event = data.get("t")
-        payload = data.get("p", [])
-        if isinstance(payload, dict):
-            self.server._dispatch_received(event, self, **payload)
-
-        elif isinstance(payload, list):
-            self.server._dispatch_received(event, self, *payload)
-
-        else:
-            self.server._dispatch_received(event, self)
-
-    async def poll(self):
-        """
-        Poll one message and call message_receivedx
-        """
-        msg = await self.recv()
-        await self.message_received(msg)
-
-    async def start_polling(self):
-        """
-        Poll messages "forever"
-        """
-        while True:
-            await self.poll()
+        await asyncio.wait_for(self._hb_ack, timeout=self._hb_interval)
 
     async def start_heartbeat(self):
         """
         Send a heartbeat every self.hb_interval seconds and wait for heartbeat_ack
         Otherwise close the connection
         """
-        await asyncio.sleep(self.hb_interval)
-        while True:
+        await asyncio.sleep(self._hb_interval)
+        while not self.closed:
             sent = time.perf_counter()
             try:
                 await self.heartbeat()
+
             except asyncio.TimeoutError:
-                await self.close()
+                await self.close(code=aiohttp.WSCloseCode.PROTOCOL_ERROR)
                 return
 
-            except websockets.ConnectionClosed:
+            except RuntimeError:
+                # Connection was probably closed somewhere else
+                await self.close(code=aiohttp.WSCloseCode.OK)
                 return
 
             self.latency = latency = time.perf_counter() - sent
-            await asyncio.sleep(self.hb_interval - latency)
+            await asyncio.sleep(self._hb_interval - latency)
+
+    def heartbeat_ack(self):
+        """
+        Acknowledge a received heartbeat
+        """
+        return self.send_op(Opcodes.HEARTBEAT_ACK)
+
+    async def poll(self):
+        """
+        Poll one message and call message_received
+        """
+        try:
+            msg = await self.receive_json()
+
+        except (TypeError, json.JSONDecodeError):
+            await self.close(code=aiohttp.WSCloseCode.UNSUPPORTED_DATA)
+            return
+
+        await self._msg_received(msg)
+
+    async def start_polling(self):
+        """
+        Poll messages until the connection is closed
+        """
+        while not self.closed:
+            try:
+                await self.poll()
+
+            except RuntimeError:
+                # Connection was probably closed somewhere else
+                await self.close(code=aiohttp.WSCloseCode.OK)
+                return
+
+    async def _msg_received(self, msg):
+        op = msg.get("op")
+        data = msg.get("d")
+
+        if op != Opcodes.DISPATCH:
+            if op == Opcodes.HEARTBEAT:
+                await self.heartbeat_ack()
+
+            elif op == Opcodes.HEARTBEAT_ACK:
+                if not self._hb_ack.done():
+                    self._hb_ack.set_result(None)
+
+            return
+
+        event = data.get("t")
+        payload = data.get("p", {})
+        self.server.dispatch_event(event, self, payload)

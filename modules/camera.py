@@ -1,6 +1,11 @@
-from module import Module
+from module import Module, listener, http_route
 from aiohttp import web
 import random
+
+
+class MJPEGResponse(web.StreamResponse):
+    async def write_jpeg(self, jpeg):
+        pass
 
 
 class CameraModule(Module):
@@ -8,28 +13,24 @@ class CameraModule(Module):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._app = web.Application()
-        self._runner = web.AppRunner(self._app)
-        self._port = kwargs.pop("port", 0)
 
-    async def is_active(self):
-        return random.randint(0, 100) < 80
+    async def http_stream(self, request):
+        stream = MJPEGResponse()
+        await stream.prepare(request)
+        while self.loaded:
+            await stream.write_jpeg(None)
 
-    async def _post_load(self):
-        await self._runner.setup()
-        site = web.TCPSite(self._runner, '0.0.0.0', self._port)
-        await site.start()
-        self._port = site._server.sockets[0].getsockname()[1]
-        self.server.dispatch("cam_available", {"port": self._port})
+        await stream.write_eof()
+        return stream
 
-    async def _post_unload(self):
-        await self._runner.cleanup()
+    @listener("connect")
+    async def on_connect(self, ws):
+        await ws.send_event("hello", "hello")
 
-    async def on_client_connect(self, client):
-        await client.dispatch("cam_available", {"port": self._port})
+    @listener("test")
+    async def on_test(self, ws, payload):
+        print(ws, payload)
 
-    async def on_cam_request(self, client):
-        await client.dispatch("cam_available", {"port": self._port})
-
-    async def on_cam_move(self, _, degrees):
-        print("cam move", degrees)
+    @http_route()
+    async def handle_stream(self, request):
+        return web.Response(text="This is a stream!")
