@@ -16,15 +16,35 @@ class CameraModule(Module):
             "yrot": 0
         }
 
-        self.goal_fps = 30
+        self._goal_fps = 30
 
-    @listener("connect")
-    async def on_connect(self, ws):
-        await ws.send_event("hello", "hello")
+    async def get_cam_state(self):
+        """
+        Get current x- and y-rot of the connected cam
+        """
+        pass
 
-    @listener("test")
-    async def on_test(self, ws, payload):
-        print(ws, payload)
+    async def move_cam(self):
+        """
+        Apply x- and y-rot to the connected cam
+        """
+        pass
+
+    @listener("cam_move")
+    async def on_cam_move(self, ws, payload):
+        try:
+            new_xrot = int(payload.get("xrot"))
+            new_yrot = int(payload.get("yrot"))
+
+            await self.state_update({
+                "xrot": new_xrot,
+                "yrot": new_yrot
+            })
+            await self.move_cam()
+
+        except (KeyError, ValueError):
+            # Invalid payload provided
+            return
 
     @http_route()
     async def handle_stream(self, request):
@@ -53,5 +73,6 @@ class CameraModule(Module):
 
                 await response.drain()
 
+                # Wait a bit to reach 30 fps (too many frames can cause performance issues)
                 time_dif = time.perf_counter() - time_before
-                await asyncio.sleep((1 / self.goal_fps) - time_dif)
+                await asyncio.sleep((1 / self._goal_fps) - time_dif)
