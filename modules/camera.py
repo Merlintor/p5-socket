@@ -3,6 +3,10 @@ from aiohttp import web, MultipartWriter
 import asyncio
 import time
 from uuid import uuid4
+import cv2
+
+
+USB_ID = 0
 
 
 class CameraModule(Module):
@@ -10,6 +14,7 @@ class CameraModule(Module):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.capture = cv2.VideoCapture(USB_ID)
         self.state = {
             "available": True,
             "xrot": 0,
@@ -48,11 +53,6 @@ class CameraModule(Module):
 
     @http_route()
     async def handle_stream(self, request):
-        frames = (
-            open("sample.jpeg", "rb").read(),
-            open("sample2.jpeg", "rb").read()
-        )
-
         boundary = str(uuid4())
         response = web.StreamResponse(
             status=200,
@@ -64,17 +64,23 @@ class CameraModule(Module):
         await response.prepare(request)
 
         while True:
-            for frame in frames:
-                time_before = time.perf_counter()
+            time_before = time.perf_counter()
 
-                with MultipartWriter('image/jpeg', boundary=boundary) as mpwriter:
-                    mpwriter.append(frame, {'Content-Type': 'image/jpeg'})
-                    await mpwriter.write(response, close_boundary=False)
+            # Run in thread pool to not block the main thread
+            rc, frame = await self.loop.run_in_executor(None, self.capture.read)
+            if not rc:
+                continue
 
-                await response.drain()
+            result, data = cv2.imencode(".jpg", frame, (int(cv2.IMWRITE_JPEG_QUALITY), 50))
 
-                # Wait a bit to reach 30 fps (too many frames can cause performance issues on both sides)
-                time_dif = time.perf_counter() - time_before
-                await asyncio.sleep((1 / self._goal_fps) - time_dif)
+            with MultipartWriter('image/jpeg', boundary=boundary) as mpwriter:
+                mpwriter.append(data.tostring(), {'Content-Type': 'image/jpeg'})
+                await mpwriter.write(response, close_boundary=False)
+
+            await response.drain()
+
+            # Wait a bit to reach the goal fps (too many frames can cause performance issues on both sides)
+            time_dif = time.perf_counter() - time_before
+            await asyncio.sleep((1 / self._goal_fps) - time_dif)
 
         return response

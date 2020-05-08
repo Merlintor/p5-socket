@@ -2,6 +2,7 @@ from aiohttp import web
 import aiohttp
 import asyncio
 import weakref
+from concurrent.futures import ThreadPoolExecutor
 
 from protocol import WebSocketConnection
 import modules
@@ -82,5 +83,8 @@ if __name__ == "__main__":
     server = Server()
     for module in modules.to_load:
         server.load_module(module)
+
+    # Thread pool for running blocking operations with loop.run_in_executor
+    server.loop.set_default_executor(ThreadPoolExecutor(max_workers=10))
 
     server.run(host="0.0.0.0", port=420)
