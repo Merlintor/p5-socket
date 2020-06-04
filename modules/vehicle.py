@@ -1,7 +1,8 @@
-from module import Module
+from module import Module, listener
 import asyncio
 from enum import IntEnum
 import RPi.GPIO as GPIO
+import servos
 
 
 GPIO.setmode(GPIO.BOARD)
@@ -14,17 +15,26 @@ class Pins(IntEnum):
     PWM2 = 35
     PWM1 = 37
 
+    SERVO = 11
+
 
 class VehicleModule(Module):
-    NAME = "vehicle"
+    NAME = "engine"
 
-    async def _post_load(self):
-        self.set_speed = 0
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.state = {
+            "movement": [0, 0, 0, 0],
+        }
+
+        self._rot = 70
+        self._last_rot = None
         self._speed = 0
 
+        self._setup_gpio()
         self.loop.create_task(self.speed_adjuster())
-        self.server.dispatch(self.NAME, self.get_payload())
 
+    def _setup_gpio(self):
         # Over Current Response configuration
         GPIO.setup(Pins.OCC, GPIO.OUT)
         GPIO.output(Pins.OCC, 1)
@@ -42,10 +52,11 @@ class VehicleModule(Module):
         self.pwm1 = GPIO.PWM(Pins.PWM1, 1000)
         self.pwm2 = GPIO.PWM(Pins.PWM2, 1000)
 
-    async def _post_unload(self):
-        pass
+        GPIO.setup(Pins.SERVO, GPIO.OUT)
+        asyncio.run_coroutine_threadsafe(self._apply_engine(), self.loop)
 
-    async def _apply_speed(self):
+    async def _apply_engine(self):
+        print(self._speed)
         if self._speed > 0:
             self.pwm2.stop()
             self.pwm1.start(self._speed)
@@ -62,32 +73,31 @@ class VehicleModule(Module):
             GPIO.output(Pins.PWM1, 1)
             GPIO.output(Pins.PWM2, 1)
 
+        if self._rot != self._last_rot:
+            self._last_rot = self._rot
+            self.loop.run_in_executor(None, servos.set_rotation, Pins.SERVO, self._rot)
+
     async def speed_adjuster(self):
-        while self.loaded:
-            print(self._speed)
-            await asyncio.sleep(.05)
-            if self.set_speed > self._speed:
-                self._speed += 1
+        while True:
+            await asyncio.sleep(0.1)
+            mov = self.state["movement"]
+            self._speed += mov[2]
+            self._speed -= mov[0]
+            self._speed = min(max(self._speed, -50), 50)
 
-            elif self.set_speed < self._speed:
-                self._speed -= 1
+            self._rot += mov[1]
+            self._rot -= mov[3]
+            self._rot = min(max(self._rot, 50), 90)
 
-            else:
-                continue
+            await self._apply_engine()
 
-            await self._apply_speed()
+    @listener("engine_move")
+    async def on_engine_move(self, ws, payload):
+        movement = payload["movement"]
+        new_movement = self.state["movement"]
+        for key, value in movement.items():
+            new_movement[int(key)] = value
 
-    async def is_active(self):
-        # Motors should be always connected
-        return True
-
-    def get_payload(self):
-        return {"speed": self.set_speed}
-
-    async def on_client_connect(self, client):
-        await client.dispatch(self.NAME, self.get_payload())
-
-    async def on_vehicle_speed(self, ws, speed):
-        print("set", speed)
-        self.set_speed = max(min(int(speed), 100), -100)
-        self.server.dispatch(self.NAME, self.get_payload())
+        await self.state_update({
+            "movement": new_movement
+        })

@@ -4,32 +4,43 @@ import asyncio
 import weakref
 from concurrent.futures import ThreadPoolExecutor
 
-from protocol import WebSocketConnection
+from protocol import WebSocketConnection, Opcodes
 import modules
 
 
 class Server(web.Application):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._loop = kwargs.get("loop")
+        self._loop = kwargs.get("loop", asyncio.get_event_loop())
 
         self.clients = weakref.WeakSet()
 
         self.on_shutdown.append(self._on_shutdown)
-        self.add_routes([web.get("/ws", self._handle_websocket)])
+        self.add_routes([web.get("/", self._handle_websocket)])
 
         self._listeners = set()
+        self.modules = []
 
     @property
     def loop(self):
-        return self._loop or asyncio.get_event_loop()
+        return self._loop
 
     def load_module(self, module):
         md = module(self)
+        self.modules.append(md)
         for listener in md.listeners:
             self._listeners.add(listener)
 
         self.add_routes(md.http_routes)
+
+        for ws in self.clients:
+            self.loop.create_task(ws.send_op(
+                Opcodes.STATE_UPDATE,
+                {
+                    m.NAME: True
+                    for m in self.modules
+                }
+            ))
 
     def spread_event(self, event, payload):
         """
@@ -59,6 +70,14 @@ class Server(web.Application):
 
         self.clients.add(ws)
         self.dispatch_event("connect", ws)
+        await ws.send_op(
+            Opcodes.STATE_UPDATE,
+            {
+                m.NAME: True
+                for m in self.modules
+            }
+        )
+
         try:
             self.loop.create_task(ws.start_heartbeat())
             await ws.start_polling()
